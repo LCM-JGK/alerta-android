@@ -1,0 +1,22 @@
+CREATE TABLE cached_zone (
+  id INTEGER NOT NULL PRIMARY KEY,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT 'INSEGURIDAD',
+  latitude REAL NOT NULL,
+  longitude REAL NOT NULL,
+  radius_meters INTEGER NOT NULL,
+  risk_level INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+selectAll:
+SELECT * FROM cached_zone ORDER BY id DESC;
+
+deleteAll:
+DELETE FROM cached_zone;
+
+insert:
+INSERT OR REPLACE INTO cached_zone(
+  id, title, description, category, latitude, longitude, radius_meters, risk_level, created_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
