@@ -40,3 +40,13 @@ Los datos de lugares y el mapa requieren atribución a OpenStreetMap, mostrada d
 ## Publicación
 
 Inicializa esta carpeta como repositorio y publícala en GitHub con el nombre `alerta-android`. No subas `local.properties`.
+
+## Cuentas y biometría
+
+La sección **Cuenta** permite registrarse con nombre de usuario, alias y contraseña, iniciar sesión y recuperar la contraseña mediante una clave offline. La clave se muestra una sola vez después del registro y debe guardarse fuera de la aplicación. Solo una cuenta autenticada puede publicar reportes; el mapa y los avisos siguen siendo públicos.
+
+Después de iniciar sesión, el usuario puede activar el acceso con la biometría fuerte ya registrada en Android. El sistema operativo decide si muestra huella o reconocimiento facial según el dispositivo. La aplicación nunca recibe, almacena ni envía imágenes del rostro, huellas o plantillas biométricas: solo recibe el resultado correcto o incorrecto del diálogo del sistema.
+
+El token de sesión se cifra con una clave AES-GCM mantenida en Android Keystore. Las copias de seguridad de la aplicación están desactivadas para evitar trasladar datos cifrados sin su clave. La contraseña no se guarda en el teléfono.
+
+Para que el registro y la recuperación funcionen, despliega primero el backend actualizado y configura `AUTH_SECRET` en Railway. No se necesita un dominio de correo ni una cuenta de Resend.

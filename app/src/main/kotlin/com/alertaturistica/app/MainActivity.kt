@@ -2,7 +2,6 @@ package com.alertaturistica.app
 
 import android.Manifest
 import android.os.Bundle
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -34,6 +33,7 @@ import androidx.compose.material.icons.outlined.Map
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.MyLocation
 import androidx.compose.material.icons.outlined.Place
+import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.WarningAmber
@@ -84,6 +84,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.fragment.app.FragmentActivity
 import app.cash.sqldelight.driver.android.AndroidSqliteDriver
 import com.alertaturistica.app.db.AlertaDatabase
 import org.maplibre.android.geometry.LatLng
@@ -93,21 +94,38 @@ private enum class AppScreen(val label: String, val icon: ImageVector) {
     MAP("Mapa", Icons.Outlined.Map),
     ALERTS("Avisos", Icons.Outlined.ListAlt),
     REPORT("Reportar", Icons.Outlined.AddLocationAlt),
+    ACCOUNT("Cuenta", Icons.Outlined.Person),
 }
 
-class MainActivity : ComponentActivity() {
+class MainActivity : FragmentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val database = AlertaDatabase(
             AndroidSqliteDriver(AlertaDatabase.Schema, applicationContext, "alerta.db"),
         )
+        val sessionStore = SecureSessionStore(applicationContext)
         setContent {
             AlertaTheme {
-                val viewModel: ZonesViewModel = viewModel(
-                    factory = ZonesFactory(ZonesRepository(database)),
+                val zonesViewModel: ZonesViewModel = viewModel(
+                    factory = ZonesFactory(ZonesRepository(database, sessionStore)),
                 )
-                AlertaApp(viewModel)
+                val authViewModel: AuthViewModel = viewModel(
+                    factory = AuthFactory(AuthRepository(sessionStore), sessionStore),
+                )
+                AlertaApp(
+                    viewModel = zonesViewModel,
+                    authViewModel = authViewModel,
+                    biometricAvailable = canUseStrongBiometrics(this),
+                    onBiometricRequest = { onSuccess, onError ->
+                        requestBiometricAuthentication(
+                            title = "Confirma tu identidad",
+                            subtitle = "Usa la huella o rostro registrado en este dispositivo",
+                            onSuccess = onSuccess,
+                            onError = onError,
+                        )
+                    },
+                )
             }
         }
     }
@@ -115,14 +133,38 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AlertaApp(viewModel: ZonesViewModel) {
+private fun AlertaApp(
+    viewModel: ZonesViewModel,
+    authViewModel: AuthViewModel,
+    biometricAvailable: Boolean,
+    onBiometricRequest: (() -> Unit, (String) -> Unit) -> Unit,
+) {
     val state = viewModel.uiState
+    val authState = authViewModel.uiState
     val context = LocalContext.current
     var screenName by rememberSaveable { mutableStateOf(AppScreen.MAP.name) }
     var currentLocation by remember { mutableStateOf<LatLng?>(null) }
     var pendingLocationAction by remember { mutableStateOf<((LatLng) -> Unit)?>(null) }
     val screen = AppScreen.valueOf(screenName)
     val snackbarHostState = remember { SnackbarHostState() }
+
+    if (authState.isLocked) {
+        BiometricLockScreen(
+            onUnlock = {
+                onBiometricRequest(
+                    authViewModel::unlockWithBiometrics,
+                    authViewModel::biometricFailed,
+                )
+            },
+            onUsePassword = authViewModel::logout,
+        )
+        return
+    }
+
+    if (authState.isRestoring) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+        return
+    }
 
     val locateFromDevice = {
         requestCurrentLocation(
@@ -169,6 +211,12 @@ private fun AlertaApp(viewModel: ZonesViewModel) {
             viewModel.consumeMessage()
         }
     }
+    LaunchedEffect(authState.message) {
+        authState.message?.let {
+            snackbarHostState.showSnackbar(it)
+            authViewModel.consumeMessage()
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -181,13 +229,14 @@ private fun AlertaApp(viewModel: ZonesViewModel) {
                                 AppScreen.MAP -> "Explora con precaución"
                                 AppScreen.ALERTS -> "Información de la comunidad"
                                 AppScreen.REPORT -> "Ayuda a otras personas"
+                                AppScreen.ACCOUNT -> "Privacidad y seguridad"
                             },
                             style = MaterialTheme.typography.labelMedium,
                         )
                     }
                 },
                 actions = {
-                    if (screen != AppScreen.REPORT) {
+                    if (screen == AppScreen.MAP || screen == AppScreen.ALERTS) {
                         IconButton(onClick = viewModel::refresh, enabled = !state.isLoading) {
                             Icon(Icons.Outlined.Refresh, contentDescription = "Actualizar avisos")
                         }
@@ -222,14 +271,35 @@ private fun AlertaApp(viewModel: ZonesViewModel) {
                     onClearPlaceSearch = viewModel::clearPlaceSearch,
                 )
                 AppScreen.ALERTS -> AlertsScreen(state.zones)
-                AppScreen.REPORT -> ReportScreen(
-                    zones = state.zones,
-                    isSubmitting = state.isSubmitting,
-                    currentLocation = currentLocation,
-                    onRequestLocation = requestLocation,
-                    onSubmit = { request ->
-                        viewModel.submit(request) { screenName = AppScreen.MAP.name }
+                AppScreen.REPORT -> if (authState.user == null) {
+                    SignInRequiredScreen { screenName = AppScreen.ACCOUNT.name }
+                } else {
+                    ReportScreen(
+                        zones = state.zones,
+                        isSubmitting = state.isSubmitting,
+                        currentLocation = currentLocation,
+                        onRequestLocation = requestLocation,
+                        onSubmit = { request ->
+                            viewModel.submit(request) { screenName = AppScreen.MAP.name }
+                        },
+                    )
+                }
+                AppScreen.ACCOUNT -> AccountScreen(
+                    state = authState,
+                    biometricAvailable = biometricAvailable,
+                    onShow = authViewModel::show,
+                    onLogin = authViewModel::login,
+                    onRegister = authViewModel::register,
+                    onReset = authViewModel::resetPassword,
+                    onRecoveryCodeSaved = authViewModel::recoveryCodeSaved,
+                    onEnableBiometric = {
+                        onBiometricRequest(
+                            authViewModel::enableBiometrics,
+                            authViewModel::biometricFailed,
+                        )
                     },
+                    onDisableBiometric = authViewModel::disableBiometrics,
+                    onLogout = authViewModel::logout,
                 )
             }
             if (state.isLoading) {

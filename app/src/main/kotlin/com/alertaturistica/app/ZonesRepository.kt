@@ -7,6 +7,7 @@ import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.get
 import io.ktor.client.request.header
+import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.parameter
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
@@ -20,7 +21,10 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import java.util.Locale
 
-class ZonesRepository(private val database: AlertaDatabase) {
+class ZonesRepository(
+    private val database: AlertaDatabase,
+    private val sessionStore: SecureSessionStore,
+) {
     private val placeSearchMutex = Mutex()
     private val placeSearchCache = mutableMapOf<String, List<ReferencePlace>>()
     private var lastPlaceRequestAt = 0L
@@ -42,7 +46,9 @@ class ZonesRepository(private val database: AlertaDatabase) {
     }
 
     suspend fun create(request: CreateZoneRequest): ZoneDto {
+        val token = sessionStore.readToken() ?: error("Inicia sesión para publicar un aviso.")
         val zone: ZoneDto = client.post("$BASE_URL/api/zones") {
+            bearerAuth(token)
             contentType(ContentType.Application.Json)
             setBody(request)
         }.body()
