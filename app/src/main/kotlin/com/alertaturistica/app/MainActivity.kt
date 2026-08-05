@@ -1,6 +1,7 @@
 package com.alertaturistica.app
 
 import android.Manifest
+import android.graphics.BitmapFactory
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -26,6 +27,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AddLocationAlt
+import androidx.compose.material.icons.outlined.AdminPanelSettings
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.ListAlt
@@ -37,9 +39,14 @@ import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.WarningAmber
+import androidx.compose.material.icons.outlined.CameraAlt
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -63,20 +70,29 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -89,12 +105,18 @@ import app.cash.sqldelight.driver.android.AndroidSqliteDriver
 import com.alertaturistica.app.db.AlertaDatabase
 import org.maplibre.android.geometry.LatLng
 import java.util.Locale
+import java.net.URL
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private enum class AppScreen(val label: String, val icon: ImageVector) {
     MAP("Mapa", Icons.Outlined.Map),
     ALERTS("Avisos", Icons.Outlined.ListAlt),
     REPORT("Reportar", Icons.Outlined.AddLocationAlt),
     ACCOUNT("Cuenta", Icons.Outlined.Person),
+    SETTINGS("Ajustes", Icons.Outlined.Settings),
+    MODERATION("Moderación", Icons.Outlined.AdminPanelSettings),
 }
 
 class MainActivity : FragmentActivity() {
@@ -105,8 +127,11 @@ class MainActivity : FragmentActivity() {
             AndroidSqliteDriver(AlertaDatabase.Schema, applicationContext, "alerta.db"),
         )
         val sessionStore = SecureSessionStore(applicationContext)
+        val settingsStore = AppSettingsStore(applicationContext)
         setContent {
-            AlertaTheme {
+            val settings = settingsStore.settings
+            val ambientLux = rememberAmbientLightLux(settings.ambientLightTheme)
+            AlertaTheme(settings, ambientLux) {
                 val zonesViewModel: ZonesViewModel = viewModel(
                     factory = ZonesFactory(ZonesRepository(database, sessionStore)),
                 )
@@ -125,6 +150,8 @@ class MainActivity : FragmentActivity() {
                             onError = onError,
                         )
                     },
+                    settings = settings,
+                    onUpdateSettings = settingsStore::update,
                 )
             }
         }
@@ -138,6 +165,8 @@ private fun AlertaApp(
     authViewModel: AuthViewModel,
     biometricAvailable: Boolean,
     onBiometricRequest: (() -> Unit, (String) -> Unit) -> Unit,
+    settings: AppSettings,
+    onUpdateSettings: ((AppSettings) -> AppSettings) -> Unit,
 ) {
     val state = viewModel.uiState
     val authState = authViewModel.uiState
@@ -147,6 +176,10 @@ private fun AlertaApp(
     var pendingLocationAction by remember { mutableStateOf<((LatLng) -> Unit)?>(null) }
     val screen = AppScreen.valueOf(screenName)
     val snackbarHostState = remember { SnackbarHostState() }
+    val heading = rememberHeadingDegrees(settings.showCompass)
+    val impact = rememberImpactEvent(settings.impactDetection)
+    var handledImpactId by rememberSaveable { mutableStateOf<Long?>(null) }
+    var accidentPresetId by rememberSaveable { mutableStateOf<Long?>(null) }
 
     if (authState.isLocked) {
         BiometricLockScreen(
@@ -224,15 +257,19 @@ private fun AlertaApp(
                 title = {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text("Alerta local", fontWeight = FontWeight.SemiBold)
+                        if (!settings.simplifiedInterface) {
                         Text(
                             text = when (screen) {
                                 AppScreen.MAP -> "Explora con precaución"
                                 AppScreen.ALERTS -> "Información de la comunidad"
                                 AppScreen.REPORT -> "Ayuda a otras personas"
                                 AppScreen.ACCOUNT -> "Privacidad y seguridad"
+                                    AppScreen.SETTINGS -> "Personaliza tu experiencia"
+                                    AppScreen.MODERATION -> "Revisión de contenido"
                             },
                             style = MaterialTheme.typography.labelMedium,
                         )
+                        }
                     }
                 },
                 actions = {
@@ -249,7 +286,10 @@ private fun AlertaApp(
         },
         bottomBar = {
             NavigationBar {
-                AppScreen.entries.forEach { destination ->
+                val destinations = if (settings.simplifiedInterface) {
+                    listOf(AppScreen.MAP, AppScreen.REPORT, AppScreen.ACCOUNT, AppScreen.SETTINGS)
+                } else AppScreen.entries.filterNot { it == AppScreen.MODERATION }
+                destinations.forEach { destination ->
                     NavigationBarItem(
                         selected = screen == destination,
                         onClick = { screenName = destination.name },
@@ -269,8 +309,10 @@ private fun AlertaApp(
                     onRequestLocation = requestLocation,
                     onSearchPlaces = viewModel::searchPlaces,
                     onClearPlaceSearch = viewModel::clearPlaceSearch,
+                    headingDegrees = heading,
+                    settings = settings,
                 )
-                AppScreen.ALERTS -> AlertsScreen(state.zones)
+                AppScreen.ALERTS -> AlertsScreen(state.zones, settings.simplifiedInterface)
                 AppScreen.REPORT -> if (authState.user == null) {
                     SignInRequiredScreen { screenName = AppScreen.ACCOUNT.name }
                 } else {
@@ -282,6 +324,10 @@ private fun AlertaApp(
                         onSubmit = { request ->
                             viewModel.submit(request) { screenName = AppScreen.MAP.name }
                         },
+                        accidentPresetId = accidentPresetId,
+                        cameraEnabled = settings.allowCameraAttachments,
+                        onMessage = viewModel::showMessage,
+                        settings = settings,
                     )
                 }
                 AppScreen.ACCOUNT -> AccountScreen(
@@ -301,11 +347,56 @@ private fun AlertaApp(
                     onDisableBiometric = authViewModel::disableBiometrics,
                     onLogout = authViewModel::logout,
                 )
+                AppScreen.SETTINGS -> SettingsScreen(
+                    settings = settings,
+                    isModerator = authState.user?.isModerator == true,
+                    onOpenModeration = { screenName = AppScreen.MODERATION.name },
+                    onUpdate = onUpdateSettings,
+                )
+                AppScreen.MODERATION -> if (authState.user?.isModerator == true) {
+                    ModerationScreen(
+                        state = state,
+                        onRefresh = viewModel::loadPendingPhotos,
+                        onSelect = viewModel::selectPendingPhoto,
+                        onClose = viewModel::closePendingPhoto,
+                        onApprove = viewModel::approvePendingPhoto,
+                        onReject = viewModel::rejectPendingPhoto,
+                    )
+                } else {
+                    SignInRequiredScreen { screenName = AppScreen.ACCOUNT.name }
+                }
             }
             if (state.isLoading) {
                 LinearProgressIndicator(Modifier.fillMaxWidth().align(Alignment.TopCenter))
             }
         }
+    }
+
+    val unhandledImpact = impact?.takeIf { it.id != handledImpactId }
+    if (unhandledImpact != null) {
+        AlertDialog(
+            onDismissRequest = { handledImpactId = unhandledImpact.id },
+            icon = { Icon(Icons.Outlined.WarningAmber, contentDescription = null) },
+            title = { Text("¿Estás bien?") },
+            text = {
+                Text(
+                    "Se detectó un movimiento brusco (${String.format(Locale.US, "%.1f", unhandledImpact.forceG)} g). " +
+                        "La aplicación no publicará nada sin tu confirmación.",
+                )
+            },
+            dismissButton = {
+                OutlinedButton(onClick = { handledImpactId = unhandledImpact.id }) { Text("Estoy bien") }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        handledImpactId = unhandledImpact.id
+                        accidentPresetId = unhandledImpact.id
+                        screenName = AppScreen.REPORT.name
+                    },
+                ) { Text("Preparar reporte") }
+            },
+        )
     }
 }
 
@@ -316,6 +407,8 @@ private fun MapScreen(
     onRequestLocation: ((LatLng) -> Unit) -> Unit,
     onSearchPlaces: (String) -> Unit,
     onClearPlaceSearch: () -> Unit,
+    headingDegrees: Float?,
+    settings: AppSettings,
 ) {
     var selectedCategory by rememberSaveable { mutableStateOf<String?>(null) }
     var query by rememberSaveable { mutableStateOf("") }
@@ -363,6 +456,9 @@ private fun MapScreen(
                 onLocateClick = {
                     onRequestLocation { location -> focusedLocation = location }
                 },
+                headingDegrees = headingDegrees,
+                orientToHeading = settings.orientMapWithDevice,
+                reduceMotion = settings.reduceMotion,
             )
             if (visibleZones.isEmpty()) {
                 Surface(
@@ -384,17 +480,17 @@ private fun MapScreen(
             textAlign = TextAlign.End,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        RiskLegend()
+        if (!settings.simplifiedInterface) RiskLegend()
     }
 }
 
 @Composable
-private fun AlertsScreen(zones: List<ZoneDto>) {
+private fun AlertsScreen(zones: List<ZoneDto>, simplifiedInterface: Boolean) {
     var selectedCategory by rememberSaveable { mutableStateOf<String?>(null) }
     var query by rememberSaveable { mutableStateOf("") }
     val visibleZones = zones.filterBy(selectedCategory).filterByQuery(query)
     Column(Modifier.fillMaxSize()) {
-        Card(
+        if (!simplifiedInterface) Card(
             modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp).fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
         ) {
@@ -520,6 +616,7 @@ private fun ReportCard(zone: ZoneDto) {
                     fontWeight = FontWeight.Bold,
                 )
             }
+            if (zone.hasPhoto) RemoteReportPhoto(zone.id)
             Text(zone.title, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
             Text(zone.description, style = MaterialTheme.typography.bodyLarge)
             HorizontalDivider()
@@ -542,17 +639,51 @@ private fun ReportScreen(
     currentLocation: LatLng?,
     onRequestLocation: ((LatLng) -> Unit) -> Unit,
     onSubmit: (CreateZoneRequest) -> Unit,
+    accidentPresetId: Long?,
+    cameraEnabled: Boolean,
+    onMessage: (String) -> Unit,
+    settings: AppSettings,
 ) {
-    var categoryName by rememberSaveable { mutableStateOf(ReportCategory.INSECURITY.name) }
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    var categoryName by rememberSaveable(accidentPresetId) {
+        mutableStateOf(if (accidentPresetId == null) ReportCategory.INSECURITY.name else ReportCategory.ACCIDENT.name)
+    }
     var riskLevel by rememberSaveable { mutableIntStateOf(1) }
-    var title by rememberSaveable { mutableStateOf("") }
+    var title by rememberSaveable(accidentPresetId) {
+        mutableStateOf(if (accidentPresetId == null) "" else "Posible accidente o caída")
+    }
     var description by rememberSaveable { mutableStateOf("") }
     var radius by rememberSaveable { mutableFloatStateOf(200f) }
     var latitude by rememberSaveable { mutableStateOf<Double?>(null) }
     var longitude by rememberSaveable { mutableStateOf<Double?>(null) }
+    var pendingCameraUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    var capturedPhoto by remember { mutableStateOf<SafePhoto?>(null) }
+    var photoPrivacyConfirmed by rememberSaveable { mutableStateOf(false) }
+    var isProcessingPhoto by remember { mutableStateOf(false) }
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+        val uri = pendingCameraUri
+        if (!success || uri == null) return@rememberLauncherForActivityResult
+        isProcessingPhoto = true
+        coroutineScope.launch {
+            runCatching { withContext(Dispatchers.IO) { sanitizeCapturedPhoto(context, uri) } }
+                .onSuccess {
+                    capturedPhoto = it
+                    photoPrivacyConfirmed = false
+                }
+                .onFailure { onMessage(it.message ?: "No se pudo procesar la fotografía.") }
+            isProcessingPhoto = false
+        }
+    }
     val category = ReportCategory.valueOf(categoryName)
     val location = if (latitude != null && longitude != null) LatLng(latitude!!, longitude!!) else null
-    val isValid = title.trim().length >= 3 && description.trim().length >= 3 && location != null
+    val missingRequirements = buildList {
+        if (title.trim().length < 3) add("escribe un título de al menos 3 caracteres")
+        if (description.trim().length < 3) add("agrega una descripción de al menos 3 caracteres")
+        if (location == null) add("selecciona la ubicación en el mapa")
+        if (capturedPhoto != null && !photoPrivacyConfirmed) add("confirma la autorización de la fotografía")
+    }
+    val isValid = missingRequirements.isEmpty()
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -649,6 +780,7 @@ private fun ReportScreen(
                             longitude = point.longitude
                         }
                     },
+                    reduceMotion = settings.reduceMotion,
                 )
             }
         }
@@ -678,6 +810,61 @@ private fun ReportScreen(
                 )
             }
         }
+        if (cameraEnabled) {
+            item { SectionTitle("6. Fotografía opcional", "Registra únicamente el lugar u obstáculo, nunca personas o placas.") }
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (capturedPhoto == null) {
+                        OutlinedButton(
+                            onClick = {
+                                runCatching { createCameraOutputUri(context) }
+                                    .onSuccess {
+                                        pendingCameraUri = it
+                                        cameraLauncher.launch(it)
+                                    }
+                                    .onFailure { onMessage("No se pudo abrir la cámara.") }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !isProcessingPhoto,
+                        ) {
+                            Icon(Icons.Outlined.CameraAlt, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text(if (isProcessingPhoto) "Procesando…" else "Tomar fotografía")
+                        }
+                    } else {
+                        Image(
+                            bitmap = capturedPhoto!!.preview,
+                            contentDescription = "Vista previa de la evidencia",
+                            modifier = Modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(18.dp)),
+                            contentScale = ContentScale.Crop,
+                        )
+                        Text(
+                            "Imagen reducida a ${capturedPhoto!!.sizeBytes / 1024} KB y sin metadatos EXIF o GPS.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = photoPrivacyConfirmed, onCheckedChange = { photoPrivacyConfirmed = it })
+                            Text("Confirmo que no muestra rostros, placas ni datos personales y autorizo su revisión y publicación.")
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                capturedPhoto = null
+                                photoPrivacyConfirmed = false
+                            },
+                        ) {
+                            Icon(Icons.Outlined.Delete, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text("Eliminar fotografía")
+                        }
+                        Text(
+                            "La fotografía se enviará como pendiente y solo será pública después de la revisión de un moderador.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        }
         item {
             Surface(
                 color = MaterialTheme.colorScheme.tertiaryContainer,
@@ -691,8 +878,24 @@ private fun ReportScreen(
             }
         }
         item {
+            if (!isValid) {
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer,
+                    shape = RoundedCornerShape(16.dp),
+                ) {
+                    Text(
+                        "Para publicar: ${missingRequirements.joinToString("; ")}.",
+                        modifier = Modifier.padding(14.dp),
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                }
+            }
             Button(
                 onClick = {
+                    if (!isValid) {
+                        onMessage("Completa los requisitos indicados antes de publicar.")
+                        return@Button
+                    }
                     onSubmit(
                         CreateZoneRequest(
                             title = title.trim(),
@@ -702,11 +905,12 @@ private fun ReportScreen(
                             longitude = location.longitude,
                             radiusMeters = radius.toInt(),
                             riskLevel = riskLevel,
+                            photoBase64 = capturedPhoto?.base64,
                         ),
                     )
                 },
                 modifier = Modifier.fillMaxWidth().height(54.dp),
-                enabled = isValid && !isSubmitting,
+                enabled = !isSubmitting,
             ) {
                 if (isSubmitting) {
                     CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
@@ -831,10 +1035,73 @@ private val DarkColors = darkColorScheme(
     tertiaryContainer = Color(0xFF244C5B),
 )
 
+private val HighContrastLightColors = lightColorScheme(
+    primary = Color(0xFF00432E),
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFFB5F5D6),
+    onPrimaryContainer = Color.Black,
+    secondary = Color(0xFF243D32),
+    secondaryContainer = Color(0xFFD8F2E3),
+    onSecondaryContainer = Color.Black,
+    background = Color.White,
+    onBackground = Color.Black,
+    surface = Color.White,
+    onSurface = Color.Black,
+    error = Color(0xFF8C0009),
+)
+
+private val HighContrastDarkColors = darkColorScheme(
+    primary = Color(0xFF8DFFCB),
+    onPrimary = Color.Black,
+    primaryContainer = Color(0xFF006B4B),
+    onPrimaryContainer = Color.White,
+    secondary = Color(0xFFCFFBE5),
+    secondaryContainer = Color(0xFF294A3B),
+    onSecondaryContainer = Color.White,
+    background = Color.Black,
+    onBackground = Color.White,
+    surface = Color.Black,
+    onSurface = Color.White,
+    error = Color(0xFFFFB4AB),
+)
+
 @Composable
-private fun AlertaTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = if (androidx.compose.foundation.isSystemInDarkTheme()) DarkColors else LightColors,
-        content = content,
-    )
+private fun AlertaTheme(settings: AppSettings, ambientLux: Float?, content: @Composable () -> Unit) {
+    val systemDark = androidx.compose.foundation.isSystemInDarkTheme()
+    val useDarkTheme = if (settings.ambientLightTheme && ambientLux != null) ambientLux < 45f else systemDark
+    val colors = when {
+        settings.highContrast && useDarkTheme -> HighContrastDarkColors
+        settings.highContrast -> HighContrastLightColors
+        useDarkTheme -> DarkColors
+        else -> LightColors
+    }
+    val currentDensity = LocalDensity.current
+    val fontScale = if (settings.largeText) maxOf(currentDensity.fontScale, 1.22f) else currentDensity.fontScale
+    CompositionLocalProvider(LocalDensity provides Density(currentDensity.density, fontScale)) {
+        MaterialTheme(colorScheme = colors, content = content)
+    }
+}
+
+@Composable
+private fun RemoteReportPhoto(zoneId: Long) {
+    val url = approvedPhotoUrl(zoneId)
+    val image by produceState<ImageBitmap?>(initialValue = null, url) {
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                val connection = URL(url).openConnection().apply {
+                    connectTimeout = 8_000
+                    readTimeout = 8_000
+                }
+                connection.getInputStream().use { BitmapFactory.decodeStream(it)?.asImageBitmap() }
+            }.getOrNull()
+        }
+    }
+    image?.let {
+        Image(
+            bitmap = it,
+            contentDescription = "Fotografía aprobada del reporte",
+            modifier = Modifier.fillMaxWidth().height(210.dp).clip(RoundedCornerShape(16.dp)),
+            contentScale = ContentScale.Crop,
+        )
+    }
 }

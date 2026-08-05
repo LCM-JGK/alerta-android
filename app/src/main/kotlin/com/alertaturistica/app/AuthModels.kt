@@ -9,7 +9,12 @@ import kotlinx.serialization.Serializable
     val recoveryCode: String,
     val newPassword: String,
 )
-@Serializable data class UserDto(val id: Long, val username: String, val alias: String)
+@Serializable data class UserDto(
+    val id: Long,
+    val username: String,
+    val alias: String,
+    val isModerator: Boolean = false,
+)
 @Serializable data class AuthResponse(val accessToken: String, val expiresAt: String, val user: UserDto)
 @Serializable data class RegistrationResponse(
     val accessToken: String,

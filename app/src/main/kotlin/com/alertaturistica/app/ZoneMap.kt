@@ -15,10 +15,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.Explore
 import androidx.compose.material.icons.outlined.MyLocation
 import androidx.compose.material.icons.outlined.Remove
 import androidx.compose.material3.Icon
 import androidx.compose.material3.SmallFloatingActionButton
+import androidx.compose.material3.Text
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -65,6 +67,9 @@ fun ZoneMap(
     focusLocation: LatLng? = null,
     onLocationSelected: ((LatLng) -> Unit)? = null,
     onLocateClick: (() -> Unit)? = null,
+    headingDegrees: Float? = null,
+    orientToHeading: Boolean = false,
+    reduceMotion: Boolean = false,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -113,7 +118,25 @@ fun ZoneMap(
 
     LaunchedEffect(map, focusLocation) {
         val target = focusLocation ?: return@LaunchedEffect
-        map?.animateCamera(CameraUpdateFactory.newLatLngZoom(target, 15.0), 500)
+        val duration = if (reduceMotion) 0 else 500
+        map?.animateCamera(CameraUpdateFactory.newLatLngZoom(target, 15.0), duration)
+    }
+
+    LaunchedEffect(map, headingDegrees, orientToHeading) {
+        val readyMap = map ?: return@LaunchedEffect
+        val heading = headingDegrees ?: return@LaunchedEffect
+        if (!orientToHeading) return@LaunchedEffect
+        val current = readyMap.cameraPosition
+        readyMap.moveCamera(
+            CameraUpdateFactory.newCameraPosition(
+                CameraPosition.Builder()
+                    .target(current.target)
+                    .zoom(current.zoom)
+                    .tilt(current.tilt)
+                    .bearing(heading.toDouble())
+                    .build(),
+            ),
+        )
     }
 
     LaunchedEffect(map, selectedLocation, previewRadiusMeters) {
@@ -161,6 +184,8 @@ fun ZoneMap(
         MapControls(
             map = map,
             onLocateClick = onLocateClick,
+            headingDegrees = headingDegrees,
+            reduceMotion = reduceMotion,
             modifier = Modifier.align(Alignment.TopEnd).padding(12.dp),
         )
     }
@@ -170,13 +195,37 @@ fun ZoneMap(
 private fun MapControls(
     map: MapLibreMap?,
     onLocateClick: (() -> Unit)?,
+    headingDegrees: Float?,
+    reduceMotion: Boolean,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        SmallFloatingActionButton(onClick = { map?.animateCamera(CameraUpdateFactory.zoomIn(), 250) }) {
+        if (headingDegrees != null) {
+            SmallFloatingActionButton(
+                onClick = {
+                    val readyMap = map ?: return@SmallFloatingActionButton
+                    val current = readyMap.cameraPosition
+                    val update = CameraUpdateFactory.newCameraPosition(
+                        CameraPosition.Builder()
+                            .target(current.target)
+                            .zoom(current.zoom)
+                            .tilt(current.tilt)
+                            .bearing(headingDegrees.toDouble())
+                            .build(),
+                    )
+                    readyMap.animateCamera(update, if (reduceMotion) 0 else 250)
+                },
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Outlined.Explore, contentDescription = "Orientar mapa al norte del dispositivo")
+                    Text("${headingDegrees.toInt()}°")
+                }
+            }
+        }
+        SmallFloatingActionButton(onClick = { map?.animateCamera(CameraUpdateFactory.zoomIn(), if (reduceMotion) 0 else 250) }) {
             Icon(Icons.Outlined.Add, contentDescription = "Acercar mapa")
         }
-        SmallFloatingActionButton(onClick = { map?.animateCamera(CameraUpdateFactory.zoomOut(), 250) }) {
+        SmallFloatingActionButton(onClick = { map?.animateCamera(CameraUpdateFactory.zoomOut(), if (reduceMotion) 0 else 250) }) {
             Icon(Icons.Outlined.Remove, contentDescription = "Alejar mapa")
         }
         if (onLocateClick != null) {

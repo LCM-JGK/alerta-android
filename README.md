@@ -18,6 +18,18 @@ Aplicación Kotlin con Jetpack Compose, MapLibre Native, Ktor Client y SQLDeligh
 - Mensajes de carga, error y confirmación, además de caché local con SQLDelight.
 - Tema claro u oscuro según la configuración del dispositivo.
 
+## Sensores, personalización y accesibilidad
+
+- Brújula y orientación opcional del mapa mediante fusión del magnetómetro, giroscopio y acelerómetro.
+- Detección opcional de impactos con confirmación del usuario; nunca se publica automáticamente.
+- Tema automático según el sensor de luz ambiental.
+- Ajustes de texto grande, contraste alto, movimiento reducido e interfaz simplificada.
+- Captura fotográfica redimensionada y sin metadatos EXIF/GPS. Se envía como pendiente y solo se distribuye después de la aprobación de un moderador.
+
+El backend debe desplegarse primero con `ADMIN_USERNAME`. Las fotografías rechazadas se eliminan y las pendientes nunca se incluyen en el endpoint público.
+
+Cuando el usuario de la sesión coincide con `ADMIN_USERNAME`, el apartado **Administración** aparece dentro de **Ajustes**. Desde ahí se pueden revisar, aprobar o rechazar fotografías sin utilizar PowerShell.
+
 ## Configuración
 
 1. Abre esta carpeta en Android Studio y deja que sincronice Gradle.

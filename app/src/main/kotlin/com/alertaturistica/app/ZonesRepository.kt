@@ -62,6 +62,7 @@ class ZonesRepository(
             zone.radiusMeters.toLong(),
             zone.riskLevel.toLong(),
             zone.createdAt,
+            if (zone.hasPhoto) 1L else 0L,
         )
         return zone
     }
@@ -99,6 +100,26 @@ class ZonesRepository(
         }.also { placeSearchCache[cacheKey] = it }
     }
 
+    suspend fun pendingPhotos(): List<PendingPhotoDto> {
+        val token = moderatorToken()
+        return client.get("$BASE_URL/api/moderation/photos") { bearerAuth(token) }.body()
+    }
+
+    suspend fun pendingPhotoContent(zoneId: Long): ByteArray {
+        val token = moderatorToken()
+        return client.get("$BASE_URL/api/moderation/photos/$zoneId/content") { bearerAuth(token) }.body()
+    }
+
+    suspend fun approvePhoto(zoneId: Long) {
+        val token = moderatorToken()
+        client.post("$BASE_URL/api/moderation/photos/$zoneId/approve") { bearerAuth(token) }
+    }
+
+    suspend fun rejectPhoto(zoneId: Long) {
+        val token = moderatorToken()
+        client.post("$BASE_URL/api/moderation/photos/$zoneId/reject") { bearerAuth(token) }
+    }
+
     fun cached(): List<ZoneDto> = database.zoneQueries.selectAll().executeAsList().map {
         ZoneDto(
             id = it.id,
@@ -110,6 +131,7 @@ class ZonesRepository(
             radiusMeters = it.radius_meters.toInt(),
             riskLevel = it.risk_level.toInt(),
             createdAt = it.created_at,
+            hasPhoto = it.has_photo == 1L,
         )
     }
 
@@ -124,8 +146,12 @@ class ZonesRepository(
             zone.radiusMeters.toLong(),
             zone.riskLevel.toLong(),
             zone.createdAt,
+            if (zone.hasPhoto) 1L else 0L,
         )
     }
+
+    private fun moderatorToken(): String = sessionStore.readToken()
+        ?: error("Inicia sesión con la cuenta moderadora.")
 
     private companion object {
         const val BASE_URL = "https://alerta-backend-production.up.railway.app"
@@ -135,6 +161,9 @@ class ZonesRepository(
         const val NOMINATIM_MIN_INTERVAL_MS = 1_100L
     }
 }
+
+fun approvedPhotoUrl(zoneId: Long): String =
+    "https://alerta-backend-production.up.railway.app/api/zones/$zoneId/photo"
 
 private fun PlaceSearchDto.categoryLabel(): String = when (category) {
     "shop" -> "Tienda"

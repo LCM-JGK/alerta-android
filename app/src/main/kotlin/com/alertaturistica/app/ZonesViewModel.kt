@@ -38,7 +38,11 @@ class ZonesViewModel(private val repository: ZonesRepository) : ViewModel() {
                     uiState = uiState.copy(
                         zones = listOf(created) + uiState.zones.filterNot { it.id == created.id },
                         isSubmitting = false,
-                        message = "Reporte publicado. Gracias por ayudar a la comunidad.",
+                        message = if (created.photoStatus == "PENDING") {
+                            "Reporte publicado. La fotografía está pendiente de moderación."
+                        } else {
+                            "Reporte publicado. Gracias por ayudar a la comunidad."
+                        },
                     )
                     onSuccess()
                 }
@@ -69,6 +73,76 @@ class ZonesViewModel(private val repository: ZonesRepository) : ViewModel() {
                         message = error.message ?: "No se pudo buscar el lugar.",
                     )
                 }
+        }
+    }
+
+    fun loadPendingPhotos() {
+        if (uiState.isModerating) return
+        viewModelScope.launch {
+            uiState = uiState.copy(isModerating = true)
+            runCatching { withContext(Dispatchers.IO) { repository.pendingPhotos() } }
+                .onSuccess { photos -> uiState = uiState.copy(pendingPhotos = photos, isModerating = false) }
+                .onFailure { error ->
+                    uiState = uiState.copy(
+                        isModerating = false,
+                        message = error.message ?: "No se pudieron cargar las fotografías pendientes.",
+                    )
+                }
+        }
+    }
+
+    fun selectPendingPhoto(zoneId: Long) {
+        if (uiState.isModerating) return
+        viewModelScope.launch {
+            uiState = uiState.copy(
+                selectedPendingPhotoId = zoneId,
+                moderationPhotoBytes = null,
+                isModerating = true,
+            )
+            runCatching { withContext(Dispatchers.IO) { repository.pendingPhotoContent(zoneId) } }
+                .onSuccess { bytes -> uiState = uiState.copy(moderationPhotoBytes = bytes, isModerating = false) }
+                .onFailure { error ->
+                    uiState = uiState.copy(
+                        selectedPendingPhotoId = null,
+                        isModerating = false,
+                        message = error.message ?: "No se pudo cargar la fotografía.",
+                    )
+                }
+        }
+    }
+
+    fun closePendingPhoto() {
+        uiState = uiState.copy(selectedPendingPhotoId = null, moderationPhotoBytes = null)
+    }
+
+    fun approvePendingPhoto(zoneId: Long) = moderatePhoto(zoneId, approve = true)
+
+    fun rejectPendingPhoto(zoneId: Long) = moderatePhoto(zoneId, approve = false)
+
+    private fun moderatePhoto(zoneId: Long, approve: Boolean) {
+        if (uiState.isModerating) return
+        viewModelScope.launch {
+            uiState = uiState.copy(isModerating = true)
+            runCatching {
+                withContext(Dispatchers.IO) {
+                    if (approve) repository.approvePhoto(zoneId) else repository.rejectPhoto(zoneId)
+                    repository.pendingPhotos() to repository.refresh()
+                }
+            }.onSuccess { (pending, zones) ->
+                uiState = uiState.copy(
+                    pendingPhotos = pending,
+                    zones = zones,
+                    selectedPendingPhotoId = null,
+                    moderationPhotoBytes = null,
+                    isModerating = false,
+                    message = if (approve) "Fotografía aprobada y publicada." else "Fotografía rechazada y eliminada.",
+                )
+            }.onFailure { error ->
+                uiState = uiState.copy(
+                    isModerating = false,
+                    message = error.message ?: "No se pudo completar la moderación.",
+                )
+            }
         }
     }
 

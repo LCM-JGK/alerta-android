@@ -29,6 +29,8 @@ data class ZoneDto(
     val radiusMeters: Int,
     val riskLevel: Int,
     val createdAt: String,
+    val hasPhoto: Boolean = false,
+    val photoStatus: String? = null,
 ) {
     val reportCategory: ReportCategory get() = ReportCategory.fromApi(category)
 }
@@ -42,6 +44,7 @@ data class CreateZoneRequest(
     val longitude: Double,
     val radiusMeters: Int,
     val riskLevel: Int,
+    val photoBase64: String? = null,
 )
 
 @Serializable
@@ -63,11 +66,25 @@ data class ReferencePlace(
     val longitude: Double,
 )
 
+@Serializable
+data class PendingPhotoDto(
+    val zoneId: Long,
+    val title: String,
+    val description: String,
+    val category: String,
+    val createdAt: String,
+    val sizeBytes: Int,
+)
+
 data class AppUiState(
     val zones: List<ZoneDto> = emptyList(),
     val referencePlaces: List<ReferencePlace> = emptyList(),
     val isLoading: Boolean = false,
     val isSearchingPlaces: Boolean = false,
     val isSubmitting: Boolean = false,
+    val pendingPhotos: List<PendingPhotoDto> = emptyList(),
+    val selectedPendingPhotoId: Long? = null,
+    val moderationPhotoBytes: ByteArray? = null,
+    val isModerating: Boolean = false,
     val message: String? = null,
 )
